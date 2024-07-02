@@ -1,4 +1,5 @@
 use std::{collections::{HashMap, HashSet, hash_map::Entry, VecDeque}, convert::TryInto, fs::File, io::BufWriter, path::Path, time::{Duration, Instant, SystemTime}, sync::Arc};
+use std::ffi::OsStr;
 
 use context_switch::{OffCpuSampleGroup, ThreadContextSwitchData};
 use etw_reader::{GUID, open_trace, parser::{Parser, TryParse, Address}, print_property, schema::SchemaLocator, write_property};
@@ -20,7 +21,6 @@ mod types;
 mod unresolved_samples;
 
 use jit_category_manager::JitCategoryManager;
-use stack_converter::StackConverter;
 use lib_mappings::LibMappingInfo;
 use types::{StackFrame, StackMode};
 use unresolved_samples::{UnresolvedSamples, UnresolvedStacks};
@@ -186,7 +186,7 @@ fn main() {
         println!("No process specified");
         std::process::exit(1);
     }
-    
+
     let command_name = process_target_name.as_deref().unwrap_or("firefox");
     let mut profile = Profile::new(command_name, ReferenceTimestamp::from_system_time(profile_start_system),  SamplingInterval::from_nanos(122100)); // 8192Hz
 
@@ -411,7 +411,7 @@ fn main() {
                         // eprintln!("not watching");
                         return;
                     }
-                    
+
                     let thread = match threads.entry(thread_id) {
                         Entry::Occupied(e) => e.into_mut(),
                         Entry::Vacant(e) => {
@@ -518,7 +518,7 @@ fn main() {
                     sample_count += 1;
 
                     let thread = match threads.entry(thread_id) {
-                        Entry::Occupied(e) => e.into_mut(), 
+                        Entry::Occupied(e) => e.into_mut(),
                         Entry::Vacant(_) => {
                             if include_idle {
                                 if let Some(global_thread) = global_thread {
@@ -615,7 +615,7 @@ fn main() {
                     counter.value -= region_size as f64;
 
                     println!("{} VirtualFree({}) = {}", e.EventHeader.ProcessId, region_size, counter.value);
-                    
+
                     profile.add_counter_sample(counter.counter, timestamp, -(region_size as f64), 1);
                     for i in 0..s.property_count() {
                         let property = s.property(i);
@@ -659,8 +659,8 @@ fn main() {
                     }
                     counter.value += region_size as f64;
                     //println!("{}.{} VirtualAlloc({}) = {}",  e.EventHeader.ProcessId, thread_id, region_size, counter.value);
-                    
-                    profile.add_counter_sample(counter.counter, timestamp, (region_size as f64), 1);
+
+                    profile.add_counter_sample(counter.counter, timestamp, region_size as f64, 1);
                     profile.add_marker(thread.handle, "VirtualAlloc", TextMarker(text), timing)
                 }
                 "KernelTraceControl/ImageID/" => {
@@ -695,15 +695,23 @@ fn main() {
                     let (ref path, image_size, timestamp) = libs[&image_base];
                     let code_id = Some(format!("{timestamp:08X}{image_size:x}"));
                     let name = Path::new(path).file_name().unwrap().to_str().unwrap().to_owned();
-                    let debug_name = Path::new(&pdb_path).file_name().unwrap().to_str().unwrap().to_owned();
-                    let info = LibraryInfo { 
+
+                    let debug_name = match Path::new(&pdb_path).file_name().and_then(OsStr::to_str) {
+                        Some(name) => name.to_owned(),
+                        None => {
+                            return;
+                        }
+                    };
+                    //let debug_name = Path::new(&pdb_path).file_name().unwrap().to_str().unwrap().to_owned();
+
+                    let info = LibraryInfo {
                         name,
                         debug_name,
-                        path: path.clone(), 
+                        path: path.clone(),
                         code_id,
-                        symbol_table: None, 
+                        symbol_table: None,
                         debug_path: pdb_path,
-                        debug_id, 
+                        debug_id,
                         arch: Some("x86_64".into())
                     };
                     if process_id == 0 {
@@ -793,7 +801,7 @@ fn main() {
                         }
                     }
 
-                    let mut gpu_thread = gpu_thread.get_or_insert_with(|| {
+                    let gpu_thread = gpu_thread.get_or_insert_with(|| {
                         let gpu = profile.add_process("GPU", 1, profile_start_instant);
                         profile.add_thread(gpu, 1, profile_start_instant, false)
                     });
@@ -861,7 +869,7 @@ fn main() {
                             MarkerTiming::Instant(timestamp),
                         );
                     }
-                    
+
                     let (category, js_frame) = jit_category_manager.classify_jit_symbol(&method_name, &mut profile);
                     let info = LibMappingInfo::new_jit_function(process_jit_info.lib_handle, category, js_frame);
                     process_jit_info.jit_mapping_ops.push(e.EventHeader.TimeStamp as u64, LibMappingOp::Add(LibMappingAdd {
@@ -895,7 +903,7 @@ fn main() {
                         let thread_id = e.EventHeader.ThreadId;
                         let phase: String = parser.try_parse("Phase").unwrap();
                         let thread = match threads.entry(thread_id) {
-                            Entry::Occupied(e) => e.into_mut(), 
+                            Entry::Occupied(e) => e.into_mut(),
                             Entry::Vacant(_) => {
                                 dropped_sample_count += 1;
                                 // We don't know what process this will before so just drop it for now
@@ -918,7 +926,7 @@ fn main() {
 
                         profile.add_marker(thread.handle, s.name().trim_start_matches("Google.Chrome/"), TextMarker(text), timing)
                     }
-                     //println!("unhandled {}", s.name()) 
+                     //println!("unhandled {}", s.name())
                     }
             }
             //println!("{}", name);

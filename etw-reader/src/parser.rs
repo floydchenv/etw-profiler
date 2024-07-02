@@ -13,7 +13,6 @@ use crate::schema::TypedEvent;
 use crate::utils;
 use std::borrow::Borrow;
 use std::convert::TryInto;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use windows::core::GUID;
 
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +29,14 @@ impl Address {
         }
     }
 }
+
+// 为 Address 实现 Default trait
+impl Default for Address {
+    fn default() -> Self {
+        Address::Address32(0)
+    }
+}
+
 
 /// Parser module errors
 #[derive(Debug)]
@@ -90,17 +97,21 @@ type ParserResult<T> = Result<T, ParserError>;
 /// An implementation for most of the Primitive Types is created by using a Macro, any other needed type
 /// requires this trait to be implemented
 // TODO: Find a way to use turbofish operator
-pub trait TryParse<T> {
-    /// Implement the `try_parse` function to provide a way to Parse `T` from an ETW event or
-    /// return an Error in case the type `T` can't be parsed
+pub trait TryParse<T: Default> {
+    /// 实现 `try_parse` 函数，以便从 ETW 事件中解析 `T`，或者在无法解析 `T` 时返回错误
     ///
-    /// # Arguments
-    /// * `name` - Name of the property to be found in the Schema
+    /// # 参数
+    /// * `name` - 要在 Schema 中找到的属性名称
     fn try_parse(&mut self, name: &str) -> Result<T, ParserError>;
+
     fn parse(&mut self, name: &str) -> T {
-        self.try_parse(name).unwrap_or_else(|e| panic!("{:?} name {} {:?}", e, std::any::type_name::<T>(), name))
+        self.try_parse(name).unwrap_or_else(|_| {
+            eprintln!("Failed to parse {} as {}", name, std::any::type_name::<T>());
+            T::default()
+        })
     }
 }
+
 
 /// Represents a Parser
 ///
@@ -198,7 +209,7 @@ impl<'a> Parser<'a> {
                                 8
                             }),
                             TdhInType::InTypeGuid => return Ok(std::mem::size_of::<GUID>()),
-                            TdhInType::InTypeUnicodeString => { 
+                            TdhInType::InTypeUnicodeString => {
                                 return Ok(utils::parse_unk_size_null_unicode_size(&self.buffer))
                             }
                             TdhInType::InTypeAnsiString => {
@@ -497,38 +508,6 @@ impl TryParse<GUID> for Parser<'_> {
                 _ => return Err(ParserError::InvalidType),
             }
         };
-        Err(ParserError::InvalidType)
-    }
-}
-
-impl TryParse<IpAddr> for Parser<'_> {
-    fn try_parse(&mut self, name: &str) -> ParserResult<IpAddr> {
-        let indx = self.find_property(name)?;
-        let prop_info = &self.cache[indx];
-        let prop_info: &PropertyInfo = prop_info.borrow();
-        if let PropertyDesc::Primitive(desc) = &prop_info.property.desc {
-
-            if desc.out_type != TdhOutType::OutTypeIpv4
-                && desc.out_type != TdhOutType::OutTypeIpv6
-            {
-                return Err(ParserError::InvalidType);
-            }
-
-            // Hardcoded values for now
-            let res = match prop_info.property.length {
-                PropertyLength::Length(16) => {
-                    let tmp: [u8; 16] = prop_info.buffer.try_into()?;
-                    IpAddr::V6(Ipv6Addr::from(tmp))
-                }
-                PropertyLength::Length(4) => {
-                    let tmp: [u8; 4] = prop_info.buffer.try_into()?;
-                    IpAddr::V4(Ipv4Addr::from(tmp))
-                }
-                _ => return Err(ParserError::LengthMismatch),
-            };
-
-            return Ok(res)
-        }
         Err(ParserError::InvalidType)
     }
 }
